@@ -8,9 +8,8 @@ APP_SPECIFIC_NAME="MaxiDNS"
 APP_DESCRIPTION="${APP_SPECIFIC_NAME} is a script used for executing DNS API from various providers \
 such as linode, digital ocean, Microsoft Azure and etc"
 APP_STATUS="alpha"
-APP_VERSION="1.0.1-${APP_STATUS}"
+APP_VERSION="1.0.2-${APP_STATUS}"
 #"=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~="
-# TODO add API setup
 
 usage() {
   echo "Usage later"
@@ -259,7 +258,6 @@ function linode() {
           echo "Error, no record ID with record name ${name} and type ${type} is found for domain ${domain}"
           exit 1
         fi
-
         return 0
       else
         echo "Error, no domain ID found for domain ${domain}"
@@ -319,13 +317,45 @@ fi
 LINODE_CLI_BIN=$(which linode-cli)
 if [ -z "${LINODE_CLI_BIN}" ]; then
   echo "[${SCRIPT_NAME}]: 'error': This utility requires linode-cli to be installed."
-  exit 1
+  echo "[${SCRIPT_NAME}]: Installing linode-cli ..." 2>&1 | tee -a "${REPORT_FILE}"
+
+  if command -v pip3 &>/dev/null; then
+    pip3 install linode-cli --upgrade
+  else
+    apt-get -y install python3-pip
+    pip3 install linode-cli --upgrade
+  fi
+
+  linode_dns_api_key=$(sed -n 's/^LINODE_DNS_API_KEY=//p' "${ENVIRONMENT_FILE}" | sed -e 's/^"//' -e 's/"$//')
+  #digitalocean_dns_api_key=$(sed -n 's/^DIGITALOCEAN_DNS_API_KEY=//p' "${ENVIRONMENT_FILE}" | sed -e 's/^"//' -e 's/"$//')
+
+  echo "[${SCRIPT_NAME}]: Configuring linode-cli using expect ..." 2>&1 | tee -a "${REPORT_FILE}"
+
+  apt-get -y install expect
+  LINODE_CLI=$(expect -c "
+              set timeout 3
+              spawn linode-cli
+              expect \"Personal Access Token:\"
+              send \"${linode_dns_api_key}\r\"
+              expect \"Default Region (Optional):\"
+              send \"\r\"
+              expect \"Default Type of Linode (Optional):\"
+              send \"\r\"
+              expect \"Default Image (Optional):\"
+              send \"\r\"
+              expect eof
+              ")
+  echo "Result: "
+  echo "${LINODE_CLI}"
 fi
+
+#DIGITALOCEAN_CLI_BIN=
+#AZURE_BIN=
 
 JQ_BIN=$(which jq)
 if [ -z "${JQ_BIN}" ]; then
   echo "[${SCRIPT_NAME}]: 'error': This utility requires jq to be installed."
-  exit 1
+  apt-get -y install jq
 fi
 
 ARGNUM="$#"
