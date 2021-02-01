@@ -8,7 +8,7 @@ APP_SPECIFIC_NAME="MaxiDNS"
 APP_DESCRIPTION="${APP_SPECIFIC_NAME} is a script used for executing DNS API from various providers \
 such as linode, digital ocean, Microsoft Azure and etc"
 APP_STATUS="alpha"
-APP_VERSION="1.0-${APP_STATUS}"
+APP_VERSION="1.0.1-${APP_STATUS}"
 #"=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~="
 # TODO add API setup
 
@@ -19,23 +19,25 @@ _exit() {
   :
 }
 
-#maxidns --linode "add-dns-record" "maxibi.com" "x._domainkey" "5" "TXT" "*i..2uiu1KJM@#9IU@J()!@IJI92"
 function linode() {
   local provider action
   provider="$1"
   shift
   action="$1"
   linode_max_page=2
+  #maxidns --linode "get-domain-id" "maxibi.com"
   if [[ "${action}" == "get-domain-id" ]]; then
     shift
     local domain_id domain
     domain="$1"
     dis_args="${*:2}"
     if [[ -n "${dis_args}" ]]; then
-      echo "Warning, extra arguments provided but discarded: ${dis_args}"
+      echo "Warning, extra arguments discarded: ${dis_args}"
     fi
     if [ $# -ge 1 ]; then
-      domain_id=$(${LINODE_CLI_BIN} domains list --domain "${domain}" --pretty --json | grep -F '"id":' | sed -r 's/[^0-9]//g')
+      domain_id=$(${LINODE_CLI_BIN} domains list --json --pretty | ${JQ_BIN} ".[] | select(.domain == \"${domain}\") | .id")
+      # Traditional way without jq:
+      #domain_id=$(${LINODE_CLI_BIN} domains list --domain "${domain}" --pretty --json | grep -F '"id":' | sed -r 's/[^0-9]//g')
       if [ -n "${domain_id}" ]; then
         # Here is the real result for domain ID:
         echo "${domain_id}"
@@ -48,25 +50,22 @@ function linode() {
       echo "Error, usage: ${SCRIPT_NAME} ${provider} ${action} <domain_name>"
       exit 2
     fi
-  elif [[ "${action}" == "get-dns-record-id" ]]; then
-    :
-  elif [[ "${action}" == "get-dns-record" ]]; then
-    :
-  # eg: maxidns --linode "add-dns-record" maxibi.com testname 5 TXT testvalue
+
+  #maxidns --linode "add-dns-record" "maxibi.com" "TXT" "x._domainkey" "*i..2uiu1KJM@#9IU@J()!@IJI92" "5"
   elif [[ "${action}" == "add-dns-record" ]]; then
     shift
     #echo "add-dns-record"
     local domain name ttl type value domain_id dis_args add_dns_record retval
     domain="$1"
-    name="$2"
+    type="$2"
+    name="$3"
+    value="$4"
     # Linode ttl_sec is not replaced in API but it's working (bug?)
-    ttl="$3"
-    type="$4"
-    value="$5"
+    ttl="$5"
     dis_args="${*:6}"
 
     if [[ -n "${dis_args}" ]]; then
-      echo "Warning, extra arguments provided but discarded: ${dis_args}"
+      echo "Warning, extra arguments discarded: ${dis_args}"
     fi
     if [ $# -ge 5 ]; then
       echo "Checking domain ID for domain ${domain} ..."
@@ -79,7 +78,7 @@ function linode() {
 
         add_dns_record=$(
           ${LINODE_CLI_BIN} domains records-create "${domain_id}" --pretty --json \
-          --name "${name}" --ttl_sec "${ttl}" --type "${type}" --target "${value}"
+          --type "${type}" --name "${name}" --target "${value}" --ttl_sec "${ttl}"
         )
         retval=$?
         if [ ${retval} = 0 ]; then
@@ -98,7 +97,7 @@ function linode() {
       fi
       return 0
     else
-      echo "Error, usage: ${SCRIPT_NAME} ${provider} ${action} <domain_name> <record_name> <record_ttl> <record_type> <record_value>"
+      echo "Error, usage: ${SCRIPT_NAME} ${provider} ${action} <domain_name> <record_type> <record_name> <record_value> <record_ttl>"
       exit 2
     fi
     # maxidns --linode "delete-dns-record" <domain_name> <record_name> <record_type>
@@ -113,7 +112,7 @@ function linode() {
     dis_args="${*:4}"
 
     if [[ -n "${dis_args}" ]]; then
-      echo "Warning, extra arguments provided but discarded: ${dis_args}"
+      echo "Warning, extra arguments discarded: ${dis_args}"
     fi
 
     if [ $# -ge 3 ]; then
@@ -192,8 +191,85 @@ function linode() {
       exit 2
     fi
 
+  # In linode for record, only 3 things can be updated: name, value and TTL.
+  # maxidns --linode "update-dns-record" <domain_name> <record_type> <record_name> <record_value> <record_ttl>
   elif [[ "${action}" == "update-dns-record" ]]; then
-    :
+    shift
+    #echo "add-dns-record"
+    local domain type name value dis_args record_id record_ids record_ids_count
+    domain="$1"
+    # Record name
+    type="$2"
+    name="$3"
+    value="$4"
+    ttl="$5"
+    dis_args="${*:6}"
+
+    if [[ -n "${dis_args}" ]]; then
+      echo "Warning, extra arguments discarded: ${dis_args}"
+    fi
+
+    if [ $# -ge 5 ]; then
+      echo "Checking record for domain ${domain} with record name ${name} and type ${type} ..."
+      #domain_id=$(${LINODE_CLI_BIN} --pretty --json domains list --domain "${domain}" | grep -F '"id":' | sed -r 's/[^0-9]//g')
+      domain_id=$(${LINODE_CLI_BIN} --json --pretty domains list | ${JQ_BIN} ".[] | select(.domain == \"${domain}\") | .id")
+      if [ -n "${domain_id}" ]; then
+        count=1
+        while [[ ${count} -le ${linode_max_page} ]]; do
+          record_ids=$(${LINODE_CLI_BIN} --pretty --json domains records-list --page ${count} "${domain_id}" | ${JQ_BIN} ".[] | select((.name == \"${name}\") and (.type==\"${type}\")) | .id")
+          # Break if found result for that page
+          if [[ -n ${record_ids} ]]; then
+            break
+          fi
+          ((count++))
+        done
+        # Without -n condition, the record will be counted as 1 even it's empty line
+        if [[ -n "${record_ids}" ]]; then
+          record_ids_count=$(echo "${record_ids}" | wc -l)
+          #echo "${record_ids}"
+          echo "Total record ID found for the record name ${name} is ${record_ids_count}"
+          echo "Updating ${record_ids_count} record(s):"
+          success=0
+          for record_id in ${record_ids}; do
+            #Debug:
+            echo "Updating record ID ${record_id} ..."
+            ${LINODE_CLI_BIN} --json --pretty domains records-update "${domain_id}" "${record_id}" --name "${name}" --target "${value}" --ttl_sec "${ttl}"
+            retval=$?
+            if [ "${retval}" = 0 ]; then
+              echo "OK, record ID ${record_id} has been updated successfully updated."
+              # Do next update
+              ((success++))
+            else
+              echo "Error [${retval}], update failed for record ID ${record_id}"
+              # Do next update
+            fi
+          done
+          echo ""
+          if [ "${success}" == "${record_ids_count}" ]; then
+            echo "OK, ${success} out of ${record_ids_count} record(s) has been successfully updated"
+
+          elif [[ "${success}" -eq 1 && "${success}" -lt "${record_ids_count}" ]]; then
+            echo "Warning, only ${success} out of ${record_ids_count} record(s) has been successfully updated"
+          else
+            echo "Warning, no record has been updated"
+          fi
+        else
+          # Useful variable for future reference
+          record_ids_count=0
+          echo "Error, no record ID with record name ${name} and type ${type} is found for domain ${domain}"
+          exit 1
+        fi
+
+        return 0
+      else
+        echo "Error, no domain ID found for domain ${domain}"
+        exit 1
+      fi
+      return 0
+    else
+      echo "Error, usage: ${SCRIPT_NAME} ${provider} ${action} <domain_name> <record_type> <record_name> <record_value> <record_ttl>"
+      exit 2
+    fi
 
   else
     if [ -z "${action}" ]; then
